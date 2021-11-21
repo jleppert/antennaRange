@@ -1,0 +1,27 @@
+{
+  "name": "antennarange",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "browserify-middleware": "^8.1.1",
+    "dat.gui": "^0.7.7",
+    "dnode": "^1.2.2",
+    "express": "^4.17.1",
+    "module-alias": "^2.2.2",
+    "nprogress": "^0.2.0",
+    "reconnect": "^2.0.2",
+    "serialport": "^9.2.7",
+    "shoe": "^0.0.15",
+    "toastify-js": "^1.11.2",
+    "weak-napi": "^2.0.2"
+  },
+  "_moduleAliases": {
+    "weak": "node_modules/weak-napi"
+  }
+}
