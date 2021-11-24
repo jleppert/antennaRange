@@ -1,0 +1,35 @@
+ffmpeg -f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video0 -f mjpeg tcp://127.0.0.1:5000\?listen
+
+var cameraEl = document.createElement('canvas'),
+    ctx      = cameraEl.getContext('2d');
+
+var videoSocket = new WebSocket(`ws://${document.location.hostname}:5001`);
+videoSocket.onmessage = function(evt) {
+  var frame = new Image();
+  frame.onload = function() {
+    ctx.drawImage(frame, 0, 0);
+  }
+
+  frame.src = URL.createObjectURL(evt.data);
+}
+  
+cameraEl.width = 1920;
+cameraEl.height = 1080;  
+document.body.appendChild(cameraEl);
+
+var cameraEl = document.createElement('canvas');
+
+var jsMpeg = document.createElement('script');
+jsMpeg.src = 'jsmpeg.min.js';
+jsMpeg.addEventListener('load', () => {
+  console.log('jsmpeg loaded!');
+  cameraEl.player = new JSMpeg.Player(`ws://${document.location.hostname}:5001`, {
+    canvas: cameraEl,
+    audio: false,
+  });
+
+  document.body.appendChild(cameraEl);
+});
+document.body.appendChild(jsMpeg);
+
+

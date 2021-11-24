@@ -10,16 +10,21 @@
   "license": "ISC",
   "dependencies": {
     "browserify-middleware": "^8.1.1",
+    "bufferutil": "^4.0.5",
     "dat.gui": "^0.7.7",
     "dnode": "^1.2.2",
     "express": "^4.17.1",
+    "ffmpeg-extract-frames": "^2.0.2",
     "module-alias": "^2.2.2",
     "nprogress": "^0.2.0",
     "reconnect": "^2.0.2",
     "serialport": "^9.2.7",
+    "sharp": "^0.29.3",
     "shoe": "^0.0.15",
+    "tmp": "^0.2.1",
     "toastify-js": "^1.11.2",
-    "weak-napi": "^2.0.2"
+    "weak-napi": "^2.0.2",
+    "ws": "^8.2.3"
   },
   "_moduleAliases": {
     "weak": "node_modules/weak-napi"

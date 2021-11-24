@@ -4,7 +4,7 @@
   </head>
   <link rel="stylesheet" href="style.css">
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; font-family: 'Lucida Grande', sans-serif; }
     body {
       margin: 0px;
       padding: 0px;
@@ -20,7 +20,55 @@
     li.cr.function { text-align: center; }
     li.cr.function span.property-name { width: 100%; }
 
-    
+    .state.isBusy {
+      position: absolute;
+      top: 0px;
+      width: 100%;
+      height: 25px;
+      background-color: #fff;
+      opacity: 0.5;
+    }
+
+    @keyframes pulsate {
+    0% {
+        opacity: 0.5;
+    }
+    50% {
+        opacity: 1.0;
+    }
+    100% {
+        opacity: 0.5;
+    }
+}
+
+    .state.isBusy.true {
+      background-color: #ff0;
+      animation: pulsate 1s ease-out;
+      animation-iteration-count: infinite;
+    }
+
+    .state.isBusy.false {
+      background-color: #008000;
+    }
+
+    .state.isBusy::before {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      color: white;
+      font-weight: bold;
+    }
+
+    .state.isBusy.true::before {
+      content: 'RANGE IN MOTION';
+      color: black;
+    }
+
+    .state.isBusy.false::before {
+      content: 'READY';
+    }
   </style>
   <body>
     <script src="/client.js"></script>

@@ -2,15 +2,21 @@
 
 require('module-alias/register');
 
-var fs          = require('fs'),
-    path        = require('path'),
-    express     = require('express'),
-    http        = require('http'),
-    path        = require('path'),
-    dnode       = require('dnode'),
-    shoe        = require('shoe'),
-    SerialPort  = require('serialport'),
-    browserify  = require('browserify-middleware');
+var fs            = require('fs'),
+    tmp           = require('tmp'),
+    path          = require('path'),
+    express       = require('express'),
+    http          = require('http'),
+    path          = require('path'),
+    udp           = require('dgram'),
+    dnode         = require('dnode'),
+    sharp         = require('sharp'),
+    shoe          = require('shoe'),
+    spawn         = require('child_process').spawn,
+    EventEmitter  = require('events'),
+    SerialPort    = require('serialport'),
+    ReadLine      = require('@serialport/parser-readline'),
+    browserify    = require('browserify-middleware');
 
 var app = express();
 app.use('/client.js', browserify(path.join(__dirname, 'src', 'client.js')));
@@ -33,7 +39,7 @@ app.use('/style.css', (req, res) => {
 
 app.use(express.static('static'));
 
-const rangeControllerPort = '/dev/ttyACM1';
+const rangeControllerPort = '/dev/ttyACM0';
 
 var rangeController = new SerialPort(rangeControllerPort, {
   baudRate: 9600
@@ -70,23 +76,38 @@ setInterval(() => {
 rangeController.on('open', () => console.log('Opened range controller serial port'));
 rangeController.on('error', (err) => console.log(`Range controller serial error: ${err.message}`));
 
-rangeController.on('data', (data) => {
+var rangeResponse = rangeController.pipe(new ReadLine({ delimiter: '\n' }));
+
+var rangeEvents = new EventEmitter();
+
+rangeResponse.on('data', (data) => {
   console.log('response from controller', data.toString());
 
-  data.toString().split('\n').forEach((message) => {
-    if(!message.length) return;
-    try {
-      updateRemoteStatus(JSON.parse(message));
-    } catch(e) {
-      console.log('Error updating client status', e.toString());
-    }
-  });
+  if(!data.length) return;
+  var status;
+  try {
+    status = JSON.parse(data.toString());
+  } catch(e) {
+    console.log('Error parsing range data', e.toString());
+  }
+
+  if(status) {
+    updateRemoteStatus(status);
+    if(status.message === 'state') rangeEvents.emit('state', status);
+  }
 });
 
-function updateRemoteStatus(message) {
+var lastState, statusMessageLog = [];
+function updateRemoteStatus(status) {
+  if(status.message === 'state') {
+    lastState = status;
+  } else {
+    statusMessageLog.push([Date.now(), status]);
+  }
+  
   Object.keys(remotes).forEach((id) => {
     var r = remotes[id];
-    if(r && r.updateStatus) r.updateStatus(message);
+    if(r && r.updateStatus) r.updateStatus(status);
   });
 }
 
@@ -114,11 +135,25 @@ var sock = shoe(function(stream) {
         cb();
       });
     },
+    state: function(cb) {
+      if(lastState && lastState.isBusy) {
+        updateRemoteStatus(lastState);
+        cb();
+
+        return;
+      }
+      rangeController.write(JSON.stringify({ command: 'state' }) + '\n', (err) => {
+        if(err) return cb(err.toString());
+        cb();
+      });
+    },
     init: function(cb) {
       rangeController.write(JSON.stringify({ command: 'init' }) + '\n', (err) => {
         rangeController.close();
         if(err) return cb(err.toString());
         cb();
+
+        initRange();
       });
     },
     ping: function() {
@@ -134,12 +169,193 @@ var sock = shoe(function(stream) {
     remotes[r.id] = remote;
 
     console.log('New client connected', r.id, remotes);
+    if(lastState) {
+      remote.updateStatus(lastState);
+    } else {
+      rangeController.write(JSON.stringify({ command: 'state' }) + '\n', (err) => {
+        if(err) console.log('rangeController error fetching initial state', err);
+      });
+    }
   });
 
   d.pipe(stream).pipe(d);
 });
 
 sock.install(server, '/ws');
+
+var frameCaptureInterval = 1000,
+    capturedFrames = [];
+function initRange() {
+  rangeEvents.on('state', monitorRange);
+
+  function monitorRange(state) {
+    var framePath = tmp.dirSync().name;
+
+    lastCapturedTime = 0;
+      
+    if(state.hasHomed && !state.atHomePosition) {
+      console.log('Starting frame capture...');
+      rangeEvents.on('frame', captureFrame);
+    } else if(state.atHomePosition) {
+      rangeEvents.off('state', monitorRange);
+      rangeEvents.off('frame', captureFrame);
+      console.log('Ended frame capture with count', capturedFrames.length);
+    
+      var writtenFrameCount = 0;
+      capturedFrames.forEach((frame, index) => {
+        var frameFilePath = path.join(framePath, `${index}.jpg`);
+
+        fs.writeFile(frameFilePath, frame, (err) => {
+          if(err) return console.log('Error writing frame', err);
+          console.log('Wrote frame to path', frameFilePath);
+          writtenFrameCount++;
+
+          if(writtenFrameCount === capturedFrames) startStitch();
+        });
+      });
+    }
+  }
+
+  function stitchFrames(framePath) {
+    console.log('Starting stitch of frames at path', framePath);
+  }
+
+  var lastCapturedTime = 0;
+  function captureFrame(frame) {
+    if((Date.now() - lastCapturedTime) >= frameCaptureInterval || lastCapturedTime === 0) {
+      capturedFrames.push(frame);
+      lastCapturedTime = Date.now();
+
+      console.log('Captured frame', capturedFrames.length);
+    }
+  }
+}
+
+
+
+var ws = require('ws');
+
+var videoStreamingServer = new ws.WebSocketServer({ port: 5001, perMessageDeflate: false  });
+videoStreamingServer.on('connection', () => {
+  console.log('new video client connection');
+});
+
+
+var net = require('net');
+
+console.log(ws);
+var videoStream = net.Socket();
+
+const SOI = Buffer.from([0xff, 0xd8]);
+const EOI = Buffer.from([0xff, 0xd9]);
+ 
+var frameBuffer = [];
+videoStream.on('data', (data) => {
+  //if(!videoStreamingServer.clients.length) return;
+  
+  const eoiPos = data.indexOf(EOI);
+  const soiPos = data.indexOf(SOI);
+
+  if (eoiPos === -1) {
+    frameBuffer.push(data);
+  } else {
+    
+    const part1 = data.slice(0, eoiPos + 2);
+    if (part1.length) {
+        frameBuffer.push(part1);
+    }
+    if (frameBuffer.length) {
+      rangeEvents.emit('frame', Buffer.concat([...frameBuffer]));
+    }
+    
+    frameBuffer = [];
+  }
+  if (soiPos > -1) {
+    frameBuffer = [];
+    const part2 = data.slice(soiPos)
+    frameBuffer.push(part2);
+  }
+});
+
+rangeEvents.on('frame', data => {
+  sharp(data).resize({ kernel: 'nearest', width: 385, height: 250 }).toBuffer((err, resized, info) => {
+    if(err) console.log(err, info);
+    videoStreamingServer.clients.forEach((client) => {
+      if(client.readyState === ws.WebSocket.OPEN) {
+        client.send(resized, { binary: true });
+      }
+    });
+  });
+});
+
+videoStream.on('error', (err) => {
+  console.log('Error with video stream', err.toString()); 
+});
+
+//var videoProcess = spawn('ffmpeg', ['-f', 'v4l2', '-video_size', '1920x1080', '-i', '/dev/video0', '-f', 'mjpeg', `tcp://127.0.0.1:5000\?listen`]);
+var videoProcess = spawn('gst-launch-1.0', 
+  [
+  'v4l2src', 
+  'device=/dev/video0',
+  '!',
+  'capsfilter',
+  'caps="image/jpeg, width=1920, height=1080"',
+  '!',
+  'tcpserversink',
+  'host=127.0.0.1',
+  'port=5000'
+ ],
+{ env: { GST_DEBUG: 3 } });
+
+
+videoStream.hasConnected  = false;
+videoProcess.on('spawn', () => {  
+
+  function tryConnect() {
+    if(videoStream.hasConnected) {
+      return clearInterval(videoStream.reconnectIntervalId);
+    }
+
+    videoStream.on('error', (err) => {
+      clearInterval(videoStream.reconnectIntervalId);
+      videoStream.reconnectIntervalId = setInterval(tryConnect, 2000);
+      console.log('Error with video stream', err.toString()); 
+    });
+
+    try {
+      videoStream.connect(5000, () => {
+        console.log('Video stream connected');
+        videoStream.setNoDelay(true);
+        videoStream.hasConnected = true;
+        clearInterval(videoStream.reconnectIntervalId);
+      });
+    } catch(e) {
+      console.log(e.toString());
+      clearInterval(videoStream.reconnectIntervalId);
+      videoStream.reconnectIntervalId = setInterval(tryConnect, 2000);
+    }
+  }
+
+  tryConnect();
+});
+
+
+videoProcess.stdout.on('data', (data) => {
+  console.log(`stdout:\n${data}`);
+});
+
+videoProcess.stderr.on('data', (data) => {
+  console.error(`stderr: ${data}`);
+});
+
+videoProcess.on('error', (error) => {
+  console.error(`error: ${error.message}`);
+});
+
+videoProcess.on('close', (code) => {
+  console.log(`videoProcess process exited with code ${code}`);
+});
+
 
 if(require.main === module) {
   server.listen(3000, function() {

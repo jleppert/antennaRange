@@ -17,32 +17,24 @@ const byte LIMIT_SWITCH_MAX_PIN = 2;
 #define LIMIT_MIN false
 #define LIMIT_MAX true
 
+// ISR variables
 volatile boolean limitReached = false;
 volatile boolean limitDirection = LIMIT_MAX;
-
-volatile boolean hasHomed = false;
 volatile boolean limitMaxReached = false;
 volatile boolean limitMinReached = false;
-volatile boolean isHoming = false;
 
-void sendStatus(String message) {
-  String jsonResponse;
-
-  jsonResponse = "{\"status\": \"";
-  jsonResponse += message;
-  jsonResponse += "\"}";
-  
-  Serial.println(jsonResponse);
-  Serial.flush();
-}
+boolean hasHomed = false;
+boolean isHoming = false;
+boolean isBusy = true;
 
 void setup() {
   MCUSR = 0;
+
   Serial.begin(9600);
   
   while(!Serial){}
   delay(1000);
-
+  
   sendStatus("Initializing Range...");
   
   stepperX.setMaxSpeed(MIN_SPEED * 10);
@@ -79,12 +71,33 @@ void setup() {
   wdt_disable();
 }
 
+StaticJsonDocument<128> status;
+void sendStatus(String message) {
+  status.clear();
+  
+  status["message"] = message;
+
+  if(Serial) {
+    serializeJson(status, Serial);
+    Serial.println();
+    Serial.flush();
+
+    sendCurrentState();
+  }
+}
+
+unsigned long lastStateUpdateTime;
+unsigned long stateUpdateInterval = 1000;
+void sendStateUpdate() {
+  if((millis() - lastStateUpdateTime) > stateUpdateInterval) {
+    sendCurrentState();
+    lastStateUpdateTime = millis();
+  }
+}
+
 void minLimitReached() {
   limitReached = true;
   limitDirection = LIMIT_MIN;
-  
-  stepperX.setCurrentPosition(0);
-  axisXEncoder.write(0);
   
   limitMinReached = true;
 }
@@ -93,40 +106,28 @@ volatile long maxXAxisPosition = 0;
 void maxLimitReached() {
   limitReached = true;
   limitDirection = LIMIT_MAX;
-  
-  maxXAxisPosition = axisXEncoder.read();  
+   
   limitMaxReached = true;
 }
 
-unsigned long lastMillis;
-long travelSteps;
-long lastXEncoderValue = 0;
-long pulsesPerStep = 0;
 void doHome() {
   if(!isHoming) {
     sendStatus("Homing in progress");
     delay(1000);
   }
-  
+
 	isHoming = true;
-	stepperX.runSpeed();
-  
-  if (millis() - lastMillis >= 1000UL) {
-    lastMillis = millis();
-    if(limitMinReached) {
-      travelSteps += MIN_SPEED;
-      long currentXAxisPosition = axisXEncoder.read();
-      pulsesPerStep = abs(currentXAxisPosition - lastXEncoderValue) / MIN_SPEED;
-      lastXEncoderValue = currentXAxisPosition; 
-    }
-  }
 
 	if(limitReached == true) {
 		if(limitDirection == LIMIT_MIN) {
       stepperX.setCurrentPosition(0);
+      axisXEncoder.write(0);
 			stepperX.setSpeed(MIN_SPEED * -1);
+      sendStatus("Min limit reached");
 		} else {
+      maxXAxisPosition = axisXEncoder.read(); 
 			stepperX.setSpeed(MIN_SPEED);
+      sendStatus("Max limit reached");
 		}
 
 		limitReached = false;
@@ -135,33 +136,35 @@ void doHome() {
 	if(limitMinReached && limitMaxReached) {
 		hasHomed = true;
 		isHoming = false;
-   
+    
     sendStatus("Homing complete");
-    sendStatus("Max X Axis Position" + String(maxXAxisPosition));
+	} else {
+    stepperX.runSpeed();
 	}
 }
 
-long ticksPerStep;
+
 long margin = 2000;
 
 boolean movingToHome = false;
 boolean atHomePosition = false;
 void setHomePosition() {
   if(movingToHome == false && atHomePosition == false) {
+    movingToHome = true;
     sendStatus("Moving to home position");
     stepperX.setMaxSpeed(MIN_SPEED * 10);
     stepperX.move(abs(stepperX.currentPosition()));
-    
-    movingToHome = true;
   }
   
   long axisXPosition = axisXEncoder.read();
 
   if(axisXPosition > margin) {
     stepperX.run();
+    sendStateUpdate();
   } else if ((axisXPosition < margin)) {
     stepperX.stop();
-    delay(1000);
+    stepperX.runToPosition();
+ 
     stepperX.setSpeed(200);
 
     while(axisXPosition != 0) {
@@ -176,11 +179,14 @@ void setHomePosition() {
 
       stepperX.runSpeed();
 
+      sendStateUpdate();
+
       if(axisXPosition == 0) {
         movingToHome = false;
         atHomePosition = true;
         stepperX.setCurrentPosition(0);
         axisXEncoder.write(0);
+        isBusy = false;
         sendStatus("Arrived at home position");
         break;
       }
@@ -191,32 +197,80 @@ void setHomePosition() {
 
 // rail is in negative steps
 boolean hasMovedToPosition = false;
-void moveToPosition(long position) {
+long currentSetPosition = 0;
+void moveToPosition() {
   long axisXPosition = axisXEncoder.read();
 
-  if(position < 0) return;
-  if(position == axisXPosition) return;
-  if(position > maxXAxisPosition) return;
+  if((currentSetPosition < 0) || (currentSetPosition > maxXAxisPosition)) {
+    sendStatus("Invalid set position");
+    return;
+  }
 
-  sendStatus("Moving to position: " + String(position));
-  sendStatus("Current position: " + String(axisXPosition));
+  sendStatus("Moving to position: " + String(currentSetPosition));
   
-  while(axisXPosition != position) {
-    if(axisXPosition > position) {
-      stepperX.setSpeed(MIN_SPEED);
-    } else {
-      stepperX.setSpeed(MIN_SPEED * -1);
-    }
+  while(axisXPosition != currentSetPosition) {
 
-    stepperX.runSpeed();
+    
+    if(abs(axisXPosition - currentSetPosition) > margin) {
+      if(axisXPosition > currentSetPosition) {
+        stepperX.setSpeed(MIN_SPEED);
+      } else {
+        stepperX.setSpeed(MIN_SPEED * -1);
+      }
+
+      stepperX.runSpeed();
+      sendStateUpdate();
+    } else {
+      stepperX.stop();
+      stepperX.runToPosition();
+
+      while(axisXPosition != currentSetPosition) {
+        if(axisXPosition > currentSetPosition) {
+          stepperX.setSpeed(200);
+        } else {
+          stepperX.setSpeed(200 * -1);
+        }
+
+        stepperX.runSpeed();
+        axisXPosition = axisXEncoder.read();
+        sendStateUpdate();
+      }
+    }
     axisXPosition = axisXEncoder.read();
   }
 
-  sendStatus("Arrived at position: " + String(axisXPosition));
   hasMovedToPosition = true;
+  sendStatus("Arrived at position: " + String(axisXPosition));
 }
 
-StaticJsonDocument<200> doc;
+StaticJsonDocument<512> state;
+void sendCurrentState() {
+  state.clear();
+  
+  state["message"] = "state";
+  state["isBusy"] = isBusy;
+  state["hasHomed"] = hasHomed;
+  state["isHoming"] = isHoming;
+  state["atHomePosition"] = atHomePosition;
+  state["limitMinReached"] = limitMinReached;
+  state["limitMaxReached"] = limitMaxReached;
+  state["hasMovedToPosition"] = hasMovedToPosition;
+  state["movingToHome"] = movingToHome;
+  state["currentSetPosition"] = currentSetPosition;
+  state["currentPositionInEncoderSteps"] = axisXEncoder.read();
+  state["currentPositionInStepperSteps"] = stepperX.currentPosition();
+  state["maxPositionInEncoderSteps"] = maxXAxisPosition;
+  state["maxStepperSpeedInStepperSteps"] = stepperX.maxSpeed();
+  state["stepperSpeedInStepperSteps"] = stepperX.speed();
+
+  if(Serial) {
+     serializeJson(state, Serial);
+     Serial.println();
+     Serial.flush();
+  }
+}
+
+StaticJsonDocument<200> hostCommand;
 void loop() {
 	if(!hasHomed) {
 		doHome();
@@ -227,35 +281,54 @@ void loop() {
         String commandJSON = Serial.readStringUntil('\n');
 
         if(commandJSON.length() == 0) continue;
-        Serial.println(commandJSON);
-        DeserializationError error = deserializeJson(doc, commandJSON);
+        hostCommand.clear();
+        DeserializationError error = deserializeJson(hostCommand, commandJSON);
 
         if (error) {
           sendStatus("deserializeJson() failed: " + String(error.f_str()));
           continue;
         }
 
-        const char* command = doc["command"];
+        const char* command = hostCommand["command"];
         
         if(strcmp(command, "home") == 0) {
           movingToHome = false;
           atHomePosition = false;
+          isBusy = true;
+          sendCurrentState();
           while(!atHomePosition) setHomePosition();
+          isBusy = false;
+          sendCurrentState();
         } else if(strcmp(command, "move") == 0) {
           hasMovedToPosition = false;
-          long position = doc["position"];
-          
-          while(!hasMovedToPosition) moveToPosition(position);
+          currentSetPosition = hostCommand["position"];
+          isBusy = true;
+          sendCurrentState();
+          while(!hasMovedToPosition) moveToPosition();
+          isBusy = false;
+          sendCurrentState();
         } else if(strcmp(command, "init") == 0) {
+          isBusy = true;
+          sendCurrentState();
+          
           Serial.flush();
           Serial.end();
           wdt_enable( WDTO_1S);
         } else if(strcmp(command, "stop") == 0) {
+          isBusy = true;
+          sendCurrentState();
+          
           stepperX.stop();
+          stepperX.runToPosition(); 
+
+          isBusy = false;
+          sendCurrentState();
+        } else if(strcmp(command, "state") == 0) {
+          sendCurrentState();
         } else {
           sendStatus("Unknown command: " + String(command));
         }
       }
     }
 	}
-}
+}   
