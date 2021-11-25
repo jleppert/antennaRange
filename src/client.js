@@ -64,8 +64,10 @@ var remote;
 var connectionManager = reconnect((stream) => {
   var d = dnode({
     updateStatus: function(status) {
+      console.log('got updated status!', status);
       if(!status || !status.message) return;
       if(status.message === 'state') return updateState(status);
+      if(status.message === 'init')  return updateInit(status);
       
       if(status.isBusy) {
         stateUI.isBusy.classList.add('true');
@@ -164,7 +166,8 @@ function callRemote(method, done = function() {}) {
   }
 }
 
-var gui, 
+var gui,
+    rangeGui, 
     stateObj, 
     scanTarget, 
     manualControls,
@@ -185,6 +188,37 @@ function updatePositionSetPointControl(min, max) {
 
   controllers.position = control;
 }
+
+
+initRange({ message: 'init', description: 'Calibration', mosaicId: '145c8e77-1454-419f-8d01-7a46fc7655de' });
+
+function initRange(status) {
+  var mosaicImg = new Image();
+  mosaicImg.src = status.mosaicId;
+
+  mosaicImg.classList.add('mosaic');
+
+  if(rangeGui) rangeGui.destroy();
+  rangeGui = new dat.gui.GUI({ autoPlace: false, width: 'calc(100% - 400px)' });
+  rangeGui.domElement.style.top = '40px';
+  rangeGui.domElement.style.left = '10px';
+  rangeGui.domElement.style.width = 'calc(100% - 400px)';
+  rangeGui.domElement.style.position = 'absolute';
+  rangeGui.domElement.classList.add('range');
+  
+  document.body.appendChild(rangeGui.domElement);
+  
+  stateObj = {
+    
+  };
+
+  var range = rangeGui.addFolder(status.description);
+  range.domElement.querySelector('ul').appendChild(mosaicImg);
+  //range.__li.style.height = '400px';
+  
+  range.open();
+}
+
 
 function initUI() {
   if(gui) gui.destroy();
@@ -220,9 +254,24 @@ function initUI() {
 
   scanTarget = gui.addFolder('Scan Target');
   var scanTargetName = scanTarget.add(stateObj.scanTarget, 'name').name('Description');
-  scanTargetName.__li.prepend(cameraEl); 
+
+  var targetContainer = document.createElement('div');
+  targetContainer.classList.add('target');
+  targetContainer.appendChild(cameraEl);
+
+  var crosshairU = document.createElement('div'),
+      crosshairV = document.createElement('div');
+
+  crosshairU.classList.add('crosshair');
+  crosshairU.classList.add('u');
+  crosshairV.classList.add('crosshair');
+  crosshairV.classList.add('v');
+
+  targetContainer.appendChild(crosshairU);
+  targetContainer.appendChild(crosshairV);
+
+  scanTargetName.__li.prepend(targetContainer); 
   scanTargetName.__li.style.height = '280px';
-  window.t = scanTargetName;
   scanTarget.open();
 
   manualControls = gui.addFolder('Manual Control');

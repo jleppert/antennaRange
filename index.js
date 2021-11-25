@@ -11,6 +11,7 @@ var fs            = require('fs'),
     udp           = require('dgram'),
     dnode         = require('dnode'),
     sharp         = require('sharp'),
+    uuid          = require('uuid').v4,
     shoe          = require('shoe'),
     spawn         = require('child_process').spawn,
     EventEmitter  = require('events'),
@@ -38,6 +39,7 @@ app.use('/style.css', (req, res) => {
 });
 
 app.use(express.static('static'));
+app.use(express.static('data'));
 
 const rangeControllerPort = '/dev/ttyACM0';
 
@@ -97,10 +99,12 @@ rangeResponse.on('data', (data) => {
   }
 });
 
-var lastState, statusMessageLog = [];
+var lastState, statusMessageLog = [], lastInitState = {};
 function updateRemoteStatus(status) {
   if(status.message === 'state') {
     lastState = status;
+  } else if(status.message === 'init') {
+    lastInitState = status;    
   } else {
     statusMessageLog.push([Date.now(), status]);
   }
@@ -183,19 +187,21 @@ var sock = shoe(function(stream) {
 
 sock.install(server, '/ws');
 
-var frameCaptureInterval = 1000,
-    capturedFrames = [];
 function initRange() {
+  var frameCaptureInterval = 5000,
+      capturedFrames = [],
+      captureHandlerAttached = false;
+  
   rangeEvents.on('state', monitorRange);
+
 
   function monitorRange(state) {
     var framePath = tmp.dirSync().name;
 
-    lastCapturedTime = 0;
-      
-    if(state.hasHomed && !state.atHomePosition) {
+    if(state.hasHomed && !state.atHomePosition && !captureHandlerAttached) {
       console.log('Starting frame capture...');
       rangeEvents.on('frame', captureFrame);
+      captureHandlerAttached = true;
     } else if(state.atHomePosition) {
       rangeEvents.off('state', monitorRange);
       rangeEvents.off('frame', captureFrame);
@@ -205,28 +211,75 @@ function initRange() {
       capturedFrames.forEach((frame, index) => {
         var frameFilePath = path.join(framePath, `${index}.jpg`);
 
-        fs.writeFile(frameFilePath, frame, (err) => {
+        fs.writeFile(frameFilePath, frame.data, (err) => {
           if(err) return console.log('Error writing frame', err);
           console.log('Wrote frame to path', frameFilePath);
+          frame.filePath = frameFilePath;
+
           writtenFrameCount++;
 
-          if(writtenFrameCount === capturedFrames) startStitch();
+          if(writtenFrameCount === capturedFrames.length) stitchFrames(framePath);
         });
       });
     }
   }
 
+  const stitcher = path.join(__dirname, 'lib', 'OpenPano', 'src', 'image-stitching'),
+        outputFilePath = path.join(__dirname, 'lib', 'OpenPano', 'src', 'out.jpg'),
+        dataPath = path.join(__dirname, 'data');
+
   function stitchFrames(framePath) {
     console.log('Starting stitch of frames at path', framePath);
+    
+    try {
+      fs.unlinkSync(outputFilePath);
+    } catch(e) {}
+
+    var stitcherProcess = spawn(stitcher, capturedFrames.sort((a, b) => { 
+      return a.capturedAt - b.capturedAt })
+    .map(f => f.filePath), {
+      cwd: path.join(__dirname, 'lib', 'OpenPano', 'src')
+    });
+
+    stitcherProcess.on('spawn', () => {
+      console.log('Stitcher process started');
+    });
+    
+    stitcherProcess.stdout.on('data', (data) => {
+      console.log(`stdout:\n${data}`);
+    });
+
+    stitcherProcess.stderr.on('data', (data) => {
+      console.error(`stderr: ${data}`);
+    });
+
+    stitcherProcess.on('error', (error) => {
+      console.error(`error: ${error.message}`);
+    });
+
+    stitcherProcess.on('close', (code) => {
+      console.log(`Stitcher process process exited with code ${code}`);
+
+      if(fs.existsSync(outputFilePath)) {
+        console.log('Generated output mosaic', outputFilePath);
+        
+        var initStateMessage = { message: 'init', mosaicId: uuid() };
+        
+        fs.copyFile(outputFilePath, path.join(dataPath, initStateMessage.mosaicId), (err) => {
+          if(err) return console.log('Error copying mosaic to data path', err);
+          updateRemoteStatus(initStateMessage);
+        });
+      }
+    });
   }
 
   var lastCapturedTime = 0;
   function captureFrame(frame) {
     if((Date.now() - lastCapturedTime) >= frameCaptureInterval || lastCapturedTime === 0) {
-      capturedFrames.push(frame);
+      console.log('Captured frame', capturedFrames.length, lastCapturedTime, Date.now());
+      
       lastCapturedTime = Date.now();
-
-      console.log('Captured frame', capturedFrames.length);
+      capturedFrames.push({ data: frame, state: lastState, capturedAt: lastCapturedTime });
     }
   }
 }
@@ -243,7 +296,6 @@ videoStreamingServer.on('connection', () => {
 
 var net = require('net');
 
-console.log(ws);
 var videoStream = net.Socket();
 
 const SOI = Buffer.from([0xff, 0xd8]);

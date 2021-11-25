@@ -30,16 +30,16 @@
     }
 
     @keyframes pulsate {
-    0% {
-        opacity: 0.5;
+      0% {
+          opacity: 0.5;
+      }
+      50% {
+          opacity: 1.0;
+      }
+      100% {
+          opacity: 0.5;
+      }
     }
-    50% {
-        opacity: 1.0;
-    }
-    100% {
-        opacity: 0.5;
-    }
-}
 
     .state.isBusy.true {
       background-color: #ff0;
@@ -68,6 +68,47 @@
 
     .state.isBusy.false::before {
       content: 'READY';
+    }
+
+    img.mosaic {
+      transform: translateY(-100%) rotate(90deg);
+      transform-origin: left bottom;
+      width: 20%;
+    }
+
+    div.range {
+      width: calc(100% - 440px) !important;
+    }
+
+    .target {
+      width: 100%;
+      height: 250px;
+    }
+
+    .crosshair {
+      position: absolute;
+      top:0; left:0;
+      background: transparent;
+      border-top: 1px dotted #fff;
+      border-left: 1px dotted #fff;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .crosshair.u {
+      top: 70%;
+      width: 100%;
+    }
+
+    .crosshair.v {
+      left: 50%;
+      height: 100%;
+    }
+
+
+
+    .target {
+      position: relative;
     }
   </style>
   <body>
